@@ -144,7 +144,7 @@ export default function Model({ url, groupRef }: Props) {
       walkState.current.clip = clip;
     });
 
-    loader.load("/anims/jump.fbx", (fbx) => {
+    loader.load("/anims/Jumping.fbx", (fbx) => {
       const clip = fbx.animations?.[0];
       if (!clip) return;
 

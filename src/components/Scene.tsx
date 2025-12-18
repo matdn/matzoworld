@@ -10,6 +10,8 @@ import { Group, PointLight, Vector3 } from "three";
 import { CapsuleCollider, CuboidCollider, Physics, RigidBody, type RapierRigidBody } from "@react-three/rapier";
 import Model from "./Model";
 import Grass from "./Grass";
+import InstancedGLTFField from "./InstancedGLTFField";
+import StaticGLTF from "./StaticGLTF";
 
 const ENABLE_RAPIER = false;
 
@@ -27,12 +29,14 @@ function IntroCamera({
   target,
   body,
   duration = 3.2,
+  endPosition,
   onDone,
 }: {
   enabled: boolean;
   target: React.RefObject<Group | null>;
   body?: React.RefObject<RapierRigidBody | null>;
   duration?: number;
+  endPosition?: [number, number, number];
   onDone: () => void;
 }) {
   const { camera } = useThree();
@@ -41,6 +45,7 @@ function IntroCamera({
   const doneRef = useRef(false);
 
   const pivotRef = useRef(new Vector3());
+  const startPosRef = useRef(new Vector3());
   const endPosRef = useRef(new Vector3());
   const startThetaRef = useRef(0);
   const endThetaRef = useRef(0);
@@ -48,6 +53,14 @@ function IntroCamera({
   const endRadiusRef = useRef(5);
   const startYRef = useRef(10);
   const endYRef = useRef(2);
+
+  function shortestAngleDelta(from: number, to: number) {
+    const twoPi = Math.PI * 2;
+    let d = (to - from) % twoPi;
+    if (d > Math.PI) d -= twoPi;
+    if (d < -Math.PI) d += twoPi;
+    return d;
+  }
 
   useEffect(() => {
     if (!enabled) {
@@ -71,24 +84,26 @@ function IntroCamera({
         : target.current?.position.clone() ?? new Vector3(0, 0, 0);
       pivotRef.current.copy(pivot);
 
-      endPosRef.current.copy(camera.position);
+      startPosRef.current.copy(camera.position);
+      endPosRef.current.set(
+        endPosition?.[0] ?? camera.position.x,
+        endPosition?.[1] ?? camera.position.y,
+        endPosition?.[2] ?? camera.position.z
+      );
+
+      const startOffset = startPosRef.current.clone().sub(pivot);
+      const startRadiusXZ = Math.hypot(startOffset.x, startOffset.z) || 0.001;
+      const startTheta = Math.atan2(startOffset.z, startOffset.x);
+      startThetaRef.current = startTheta;
+      startRadiusRef.current = startRadiusXZ;
+      startYRef.current = startPosRef.current.y;
 
       const endOffset = endPosRef.current.clone().sub(pivot);
       const endRadiusXZ = Math.hypot(endOffset.x, endOffset.z) || 0.001;
       const endTheta = Math.atan2(endOffset.z, endOffset.x);
-
       endThetaRef.current = endTheta;
-      startThetaRef.current = endTheta + Math.PI * 1.5;
       endRadiusRef.current = endRadiusXZ;
-      startRadiusRef.current = endRadiusXZ + 25;
       endYRef.current = endPosRef.current.y;
-      startYRef.current = endPosRef.current.y + 12;
-
-      camera.position.set(
-        pivot.x + Math.cos(startThetaRef.current) * startRadiusRef.current,
-        startYRef.current,
-        pivot.z + Math.sin(startThetaRef.current) * startRadiusRef.current
-      );
     }
 
     const t = (now - (startTimeRef.current ?? now)) / duration;
@@ -96,7 +111,7 @@ function IntroCamera({
     const k = easeInOutCubic(clamped);
 
     const pivot = pivotRef.current;
-    const theta = startThetaRef.current + (endThetaRef.current - startThetaRef.current) * k;
+    const theta = startThetaRef.current + shortestAngleDelta(startThetaRef.current, endThetaRef.current) * k;
     const radius = startRadiusRef.current + (endRadiusRef.current - startRadiusRef.current) * k;
     const y = startYRef.current + (endYRef.current - startYRef.current) * k;
 
@@ -125,7 +140,56 @@ function FollowCamera({
   target: React.RefObject<Group | null>;
   body?: React.RefObject<RapierRigidBody | null>;
 }) {
-  const { camera } = useThree();
+  const { camera, gl } = useThree();
+
+  const yawRef = useRef(0);
+  const yawInitializedRef = useRef(false);
+  const dragRef = useRef<{ active: boolean; lastX: number }>({ active: false, lastX: 0 });
+
+  useEffect(() => {
+    const el = gl.domElement;
+    el.style.touchAction = "none";
+
+    const onDown = (e: PointerEvent) => {
+      dragRef.current.active = true;
+      dragRef.current.lastX = e.clientX;
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    };
+
+    const onMove = (e: PointerEvent) => {
+      if (!dragRef.current.active) return;
+      const dx = e.clientX - dragRef.current.lastX;
+      dragRef.current.lastX = e.clientX;
+      yawRef.current -= dx * 0.008;
+    };
+
+    const onUp = (e: PointerEvent) => {
+      dragRef.current.active = false;
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    };
+
+    el.addEventListener("pointerdown", onDown);
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
+    el.addEventListener("pointerleave", onUp);
+
+    return () => {
+      el.removeEventListener("pointerdown", onDown);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", onUp);
+      el.removeEventListener("pointerleave", onUp);
+    };
+  }, [gl]);
 
   useFrame(() => {
     const b = body?.current;
@@ -135,9 +199,16 @@ function FollowCamera({
     const distance = 4;
     const height = 2;
 
-    const camX = p.x + 2;
+    if (!yawInitializedRef.current) {
+      const dx = camera.position.x - p.x;
+      const dz = camera.position.z - p.z;
+      yawRef.current = Math.atan2(dz, dx);
+      yawInitializedRef.current = true;
+    }
+
+    const camX = p.x + Math.cos(yawRef.current) * distance;
     const camY = p.y + height;
-    const camZ = p.z + distance;
+    const camZ = p.z + Math.sin(yawRef.current) * distance;
 
     camera.position.x += (camX - camera.position.x) * 0.08;
     camera.position.y += (camY - camera.position.y) * 0.08;
@@ -183,16 +254,84 @@ function FollowLight({
   );
 }
 
-export default function Scene({ started = true }: { started?: boolean }) {
+function PlayerPositionReporter({
+  enabled,
+  target,
+  body,
+  onPlayerPosition,
+}: {
+  enabled: boolean;
+  target: React.RefObject<Group | null>;
+  body?: React.RefObject<RapierRigidBody | null>;
+  onPlayerPosition?: (p: { x: number; y: number; z: number }) => void;
+}) {
+  const lastSentRef = useRef({ t: 0, x: Number.NaN, y: Number.NaN, z: Number.NaN });
+
+  useFrame((state) => {
+    if (!enabled) return;
+    if (!onPlayerPosition) return;
+
+    const now = state.clock.getElapsedTime();
+    if (now - lastSentRef.current.t < 1 / 15) return; // ~15 Hz
+
+    const b = body?.current;
+    const p = b ? b.translation() : target.current?.position;
+    if (!p) return;
+
+    const x = p.x;
+    const y = "y" in p ? p.y : 0;
+    const z = p.z;
+
+    const prev = lastSentRef.current;
+    if (x === prev.x && y === prev.y && z === prev.z) return;
+
+    lastSentRef.current = { t: now, x, y, z };
+    onPlayerPosition({ x, y, z });
+  });
+
+  return null;
+}
+
+function PlayerPositionRefUpdater({
+  target,
+  body,
+  out,
+}: {
+  target: React.RefObject<Group | null>;
+  body?: React.RefObject<RapierRigidBody | null>;
+  out: React.MutableRefObject<Vector3>;
+}) {
+  useFrame(() => {
+    const b = body?.current;
+    const p = b ? b.translation() : target.current?.position;
+    if (!p) return;
+    out.current.set(p.x, ("y" in p ? p.y : 0) ?? 0, p.z);
+  });
+
+  return null;
+}
+
+export default function Scene({
+  started = true,
+  onPlayerPosition,
+}: {
+  started?: boolean;
+  onPlayerPosition?: (p: { x: number; y: number; z: number }) => void;
+}) {
   const modelRef = useRef<Group | null>(null);
   const playerBodyRef = useRef<RapierRigidBody | null>(null);
   const [introDone, setIntroDone] = useState(false);
+  const playerPosRef = useRef(new Vector3());
+
+  const benchX = 12.5;
+  const benchZ = 12.5;
+  const clearingRadius = 6;
 
   return (
     <Canvas
       dpr={1}
       gl={{ antialias: false, alpha: false, powerPreference: "low-power" }}
-      camera={{ position: [2, 1.5, 3], fov: 45 }}
+      camera={{ position: [0, 10, 30], fov: 45 }}
       style={{ background: "#000000" }}
       onCreated={({ gl }) => {
         const canvas = gl.domElement;
@@ -202,7 +341,7 @@ export default function Scene({ started = true }: { started?: boolean }) {
         canvas.addEventListener("webglcontextlost", onLost as EventListener, false);
       }}
     >
-      {/* <fog attach="fog" args={["#ffffff", 3, 14]} /> */}
+      <fog attach="fog" args={["#000000", 3, 14]} />
 
       {/* lumière simple */}
       <ambientLight intensity={0.6} />
@@ -210,12 +349,49 @@ export default function Scene({ started = true }: { started?: boolean }) {
 
       <FollowLight target={modelRef} body={playerBodyRef} />
 
+      <PlayerPositionReporter
+        enabled={started}
+        target={modelRef}
+        body={playerBodyRef}
+        onPlayerPosition={onPlayerPosition}
+      />
+
+      <PlayerPositionRefUpdater target={modelRef} body={playerBodyRef} out={playerPosRef} />
+
       <IntroCamera
         enabled={started && !introDone}
         target={modelRef}
         body={playerBodyRef}
+        endPosition={[2, 1.5, 3]}
         onDone={() => setIntroDone(true)}
       />
+
+      <React.Suspense fallback={null}>
+        <InstancedGLTFField
+          url="/models/three.glb"
+          count={260}
+          mapSize={50}
+          quadrant="NE"
+          spacing={2.2}
+          density={0.78}
+          jitter={0.9}
+          seed={42}
+          scale={2.5}
+          scaleJitter={0.28}
+          drawDistance={14}
+          playerPositionRef={playerPosRef}
+          clearCenterX={benchX}
+          clearCenterZ={benchZ}
+          clearRadius={clearingRadius}
+        />
+
+        <StaticGLTF
+          url="/models/banc.glb"
+          position={[benchX, 0, benchZ]}
+          rotation={[0, Math.PI, 0]}
+          scale={1}
+        />
+      </React.Suspense>
 
       <Grass
         target={modelRef}
@@ -225,6 +401,8 @@ export default function Scene({ started = true }: { started?: boolean }) {
         haloFalloff={1}
         radialBendStrength={0.5}
         height={0.25}
+        excludeCenterXZ={[benchX, benchZ]}
+        excludeRadius={clearingRadius}
       />
 
       {started ? (

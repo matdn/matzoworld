@@ -35,6 +35,8 @@ type Props = {
   bladeWidth?: number;
   windStrength?: number;
   windSpeed?: number;
+  excludeCenterXZ?: [number, number];
+  excludeRadius?: number;
 };
 
 export default function Grass({
@@ -52,6 +54,8 @@ export default function Grass({
   bladeWidth = 0.05,
   windStrength = 0.08,
   windSpeed = 1.8,
+  excludeCenterXZ,
+  excludeRadius = 0,
 }: Props) {
   const meshRef = useRef<InstancedMesh | null>(null);
 
@@ -95,6 +99,8 @@ export default function Grass({
         uTime: { value: 0 },
         uWindStrength: { value: windStrength },
         uWindSpeed: { value: windSpeed },
+        uExcludeCenterXZ: { value: new Vector2(excludeCenterXZ?.[0] ?? 0, excludeCenterXZ?.[1] ?? 0) },
+        uExcludeRadius: { value: excludeRadius },
       },
     ]);
 
@@ -192,6 +198,8 @@ export default function Grass({
         uniform float uHaloFalloff;
         uniform vec3 uDark;
         uniform vec3 uLight;
+        uniform vec2 uExcludeCenterXZ;
+        uniform float uExcludeRadius;
 
         varying vec2 vUv;
         varying float vDist;
@@ -202,6 +210,11 @@ export default function Grass({
         #include <fog_pars_fragment>
 
         void main() {
+          if (uExcludeRadius > 0.0) {
+            float dEx = distance(vWorldPos.xz, uExcludeCenterXZ);
+            if (dEx < uExcludeRadius) discard;
+          }
+
           // Blade silhouette (cutout)
           float edge = smoothstep(0.0, 0.12, vUv.x) * (1.0 - smoothstep(0.88, 1.0, vUv.x));
           float taper = mix(1.0, 0.25, vUv.y);
@@ -227,7 +240,12 @@ export default function Grass({
     });
 
     return mat;
-  }, [darkColor, haloFalloff, lightColor, radialBendStrength, radius, size, windSpeed, windStrength]);
+  }, [darkColor, haloFalloff, lightColor, radialBendStrength, radius, size, windSpeed, windStrength, excludeCenterXZ, excludeRadius]);
+
+  useEffect(() => {
+    material.uniforms.uExcludeCenterXZ.value.set(excludeCenterXZ?.[0] ?? 0, excludeCenterXZ?.[1] ?? 0);
+    material.uniforms.uExcludeRadius.value = excludeRadius;
+  }, [material, excludeCenterXZ, excludeRadius]);
 
   useEffect(() => {
     return () => material.dispose();
